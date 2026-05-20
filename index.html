@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>社内AI用 プロンプト整形＆マスキングツール</title>
+    <style>
+        body {
+            font-family: "Segoe UI", Meiryo, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f7fa;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+            font-size: 24px;
+        }
+        h2 {
+            font-size: 18px;
+            color: #34495e;
+            margin-bottom: 8px;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+        @media (min-width: 768px) {
+            .config-section {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+            }
+        }
+        .card {
+            background: #fff;
+            padding: 15px;
+            border-radius: 6px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        textarea {
+            width: 100%;
+            height: 120px;
+            padding: 10px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            resize: vertical;
+        }
+        .btn-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            background-color: #3498db;
+            color: #fff;
+            border: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .result-box {
+            background-color: #eef2f7;
+            border: 1px solid #3498db;
+            height: 200px;
+        }
+        .hint {
+            font-size: 12px;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>タスクプロンプト整形ツール (Prototype)</h1>
+    
+    <div class="container">
+        <!-- 設定エリア（ルールとプロンプト） -->
+        <div class="config-section">
+            <div class="card">
+                <h2>1. マスキングルール設定 (CSV形式)</h2>
+                <textarea id="maskRules" placeholder="置換前,置換後">山田太郎,[社員A]
+佐藤花子,[社員B]
+xx@example.com,[メールアドレスA]
+株式会社A,[取引先X]</textarea>
+                <p class="hint">※「置換したい文字,置換後の文字」を1行ずつ入力（Excelからコピペ可能）</p>
+            </div>
+            
+            <div class="card">
+                <h2>2. AIへの指示文 (プロンプトルール)</h2>
+                <textarea id="promptTemplate">以下のテキストは、私のメモやメールの内容です。
+内容を分析し、以下の形式でタスクを整理して出力してください。
+
+# 1. 期限が近い重要タスク
+# 2. 今週中に対応すべきタスク
+# 3. チームメンバーへの展開・確認事項
+
+【対象テキスト】
+---</textarea>
+                <p class="hint">※ここに出力したいHTMLの要望（手順書、見えるか等）を足していきます</p>
+            </div>
+        </div>
+
+        <!-- 入力エリア -->
+        <div class="card">
+            <h2>3. メールの本文などを貼り付け</h2>
+            <textarea id="sourceText" style="height: 150px;" placeholder="ここに自分宛てに送ったメールの本文や、溜まったテキストを貼り付けます。"></textarea>
+        </div>
+
+        <!-- 実行ボタン -->
+        <div class="btn-container">
+            <button onclick="generatePrompt()">マスキングしてプロンプトを生成</button>
+        </div>
+
+        <!-- 出力エリア -->
+        <div class="card">
+            <h2>4. 整形されたプロンプト（これをコピーして社内AIへ）</h2>
+            <textarea id="resultText" class="result-box" readonly onclick="this.select();" placeholder="ボタンを押すとここに結果が出ます。クリックで全選択できます。"></textarea>
+            <p class="hint">※個人名などがしっかりマスキングされているか確認してからAIに投げてね！</p>
+        </div>
+    </div>
+
+    <script>
+        function generatePrompt() {
+            // 1. 各入力を取得
+            const rulesRaw = document.getElementById('maskRules').value;
+            const template = document.getElementById('promptTemplate').value;
+            let sourceText = document.getElementById('sourceText').value;
+
+            // 2. マスキングルールの解析 (CSVパース)
+            const lines = rulesRaw.split('\n');
+            const rules = [];
+            for (let line of lines) {
+                if (!line.trim()) continue;
+                // 簡易的なカンマ区切り解析（Excelからのコピペやタブ区切りにも対応できるよう、カンマかタブで分割）
+                const parts = line.split(/[,\t]/);
+                if (parts.length >= 2) {
+                    rules.push({
+                        before: parts[0].trim(),
+                        after: parts[1].trim()
+                    });
+                }
+            }
+
+            // 3. マスキングの実行（文字数の長い順にソートして、誤置換を防ぐ）
+            rules.sort((a, b) => b.before.length - a.before.length);
+            
+            for (let rule of rules) {
+                if (rule.before === "") continue;
+                // 特殊文字をエスケープして正規表現を作成（グローバル・大文字小文字区別なし）
+                const escapedBefore = rule.before.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                const regex = new RegExp(escapedBefore, 'gi');
+                sourceText = sourceText.replace(regex, rule.after);
+            }
+
+            // 4. プロンプトテンプレートと合体
+            const finalPrompt = template + "\n" + sourceText + "\n---";
+
+            // 5. 結果を出力
+            document.getElementById('resultText').value = finalPrompt;
+        }
+    </script>
+</body>
+</html>
