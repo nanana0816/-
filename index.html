@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>社内AI用 プロンプト整形＆マスキングツール</title>
+    <title>社内AI用 プロンプト整形＆ルール自動保存ツール</title>
     <style>
         :root {
             --primary-color: #2c3e50;
@@ -66,7 +66,7 @@
             resize: vertical;
         }
         .table-container {
-            max-height: 300px;
+            max-height: 250px;
             overflow-y: auto;
             border: 1px solid var(--border-color);
             border-radius: 4px;
@@ -124,35 +124,23 @@
             height: 220px;
         }
         .hint { font-size: 12px; color: #7f8c8d; margin-top: 5px; }
-        .drop-zone {
-            border: 2px dashed var(--accent-color);
-            padding: 15px;
-            text-align: center;
-            background: #eef2f7;
-            border-radius: 6px;
-            margin-bottom: 10px;
-            color: var(--primary-color);
-            font-size: 14px;
+        .sync-box {
+            background: #f8f9fa;
+            border: 1px dashed #ccc;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
 
-    <h1>タスクプロンプト整形ツール (GitHub Pages 対応版)</h1>
+    <h1>タスクプロンプト整形ツール (スタンドアロン保存版)</h1>
     
     <div class="layout-grid">
         <div class="layout-col" style="width: 50%;">
             <div class="card">
-                <h2>CSVルールのインポート / エクスポート</h2>
-                <div class="drop-zone" id="dropZone">
-                    ここに mask_rules.csv をドラッグ＆ドロップするか、
-                    <input type="file" id="fileInput" accept=".csv" style="margin-top:5px;">
-                </div>
-                <button class="btn btn-success" onclick="downloadCsv()">編集したルールをCSVでダウンロード</button>
-            </div>
-
-            <div class="card">
-                <h2>1. マスキングルールの編集</h2>
+                <h2>1. マスキングルールの編集（ブラウザに自動保存されます）</h2>
                 <div class="table-container">
                     <table>
                         <thead>
@@ -167,10 +155,24 @@
                     </table>
                 </div>
                 <button class="btn" onclick="addNewRow()">ルールの新規追加</button>
+                <button class="btn btn-success" onclick="saveToStorage()">明示的に保存</button>
+            </div>
+
+            <div class="card">
+                <h2>2. ルールのバックアップ・自身のPCとの連携</h2>
+                <p class="hint">PCのメモ帳などに以下のテキストを保存しておけば、いつでもルールを復元（インポート）できます。</p>
+                <div class="sync-box">
+                    <input type="text" id="jsonDataBox" style="width:70%; padding:6px;" placeholder="ここにルールデータ(JSON)が出力されます">
+                    <button class="btn" onclick="exportRules()">データ出力</button>
+                    <button class="btn btn-success" onclick="importRules()">データ読込</button>
+                </div>
+                <div style="margin-top: 10px;">
+                    <button class="btn" onclick="downloadCsv()">Excel用CSVダウンロード</button>
+                </div>
             </div>
             
             <div class="card">
-                <h2>2. AIへの指示文 (プロンプトルール)</h2>
+                <h2>3. AIへの指示文 (プロンプトルール)</h2>
                 <textarea id="promptTemplate">以下のテキストは、私のメモやメールの内容です。
 内容を分析し、以下の形式でタスクを整理して出力してください。
 
@@ -185,14 +187,14 @@
 
         <div class="layout-col" style="width: 50%;">
             <div class="card">
-                <h2>3. メールの本文などを貼り付け</h2>
+                <h2>4. メールの本文などを貼り付け</h2>
                 <textarea id="sourceText" style="height: 180px;" placeholder="ここに自分宛てに送ったメールの本文を貼り付けます。"></textarea>
             </div>
 
             <button class="btn btn-large" onclick="generatePrompt()">マスキングしてプロンプトを生成 ▼</button>
 
             <div class="card">
-                <h2>4. 整形されたプロンプト（クリックで全選択）</h2>
+                <h2>5. 整形されたプロンプト（クリックで全選択）</h2>
                 <textarea id="resultText" class="result-box" readonly onclick="this.select();" placeholder="変換結果がここに出力されます。"></textarea>
                 <p class="hint">※個人情報が正しく隠されているか必ず目視確認してください。</p>
             </div>
@@ -200,17 +202,26 @@
     </div>
 
     <script>
-        // デフォルトのマスター設定（CSV未読込時の初期値）
-        let maskRules = [
+        // 初回起動時のデフォルトルール（連想配列/JSON形式）
+        const defaultRules = [
             { before: "山田太郎", after: "[社員A]" },
             { before: "佐藤花子", after: "[社員B]" },
-            { before: "鈴木一郎", after: "[社員C]" },
             { before: "株式会社A", after: "[取引先X]" }
         ];
 
+        let maskRules = [];
+
+        // 起動時の処理
         window.addEventListener('DOMContentLoaded', () => {
+            // ブラウザの記憶(LocalStorage)から読み込み。無ければデフォルトを作る
+            const saved = localStorage.getItem('mask_rules_data');
+            if (saved) {
+                maskRules = JSON.parse(saved);
+            } else {
+                maskRules = defaultRules;
+                saveToStorage();
+            }
             renderRulesTable();
-            setupDragAndDrop();
         });
 
         function renderRulesTable() {
@@ -229,78 +240,79 @@
 
         function updateRule(index, key, value) {
             maskRules[index][key] = value.trim();
+            saveToStorage(); // 変更時に自動保存
         }
 
         function deleteRule(index) {
             maskRules.splice(index, 1);
             renderRulesTable();
+            saveToStorage();
         }
 
         function addNewRow() {
-            let nextSuggest = "[社員D]";
+            let nextSuggest = "[社員A]";
             const employeeRules = maskRules.filter(r => r.after.includes("社員"));
             if (employeeRules.length > 0) {
                 const lastRule = employeeRules[employeeRules.length - 1].after;
-                const match = lastRule.match(/社員([A-Z0-9亜-熙ぁ-んァ-ヶ])/);
                 const charCode = lastRule.charCodeAt(lastRule.indexOf("社員") + 2);
                 if (charCode >= 65 && charCode < 90) {
                     nextSuggest = `[社員${String.fromCharCode(charCode + 1)}]`;
                 } else {
                     nextSuggest = `[社員${employeeRules.length + 1}]`;
                 }
+            } else {
+                nextSuggest = "[社員A]";
             }
             maskRules.push({ before: "", after: nextSuggest });
             renderRulesTable();
+            
             const inputs = document.querySelectorAll('#rulesTableBody tr:last-child input');
             if(inputs.length > 0) inputs[0].focus();
         }
 
-        // ファイル選択・ドラッグ&ドロップの処理
-        function setupDragAndDrop() {
-            const fileInput = document.getElementById('fileInput');
-            fileInput.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) handleFile(e.target.files[0]);
-            });
-
-            const dropZone = document.getElementById('dropZone');
-            dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
-            });
+        // ブラウザへの保存
+        function saveToStorage() {
+            localStorage.setItem('mask_rules_data', JSON.stringify(maskRules));
         }
 
-        function handleFile(file) {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const text = e.target.result;
-                parseCsv(text);
-                renderRulesTable();
-            };
-            reader.readAsText(file);
+        // JSONデータとしてテキストボックスに出力
+        function exportRules() {
+            const jsonStr = JSON.stringify(maskRules);
+            const box = document.getElementById('jsonDataBox');
+            box.value = jsonStr;
+            box.select();
+            alert("ルールをテキスト（JSON）に変換しました。コピーしてPCのメモ帳などに保存してください。");
         }
 
-        function parseCsv(text) {
-            const lines = text.split('\n');
-            const importedRules = [];
-            lines.forEach(line => {
-                if (!line.trim()) return;
-                const parts = line.split(',');
-                if (parts.length >= 2) {
-                    importedRules.push({ before: parts[0].trim(), after: parts[1].trim() });
+        // テキストボックスのJSONデータを読み込んでルールを更新
+        function importRules() {
+            const box = document.getElementById('jsonDataBox');
+            if (!box.value.trim()) {
+                alert("テキストボックスにルールデータを貼り付けてください。");
+                return;
+            }
+            try {
+                const parsed = JSON.parse(box.value);
+                if (Array.isArray(parsed)) {
+                    maskRules = parsed;
+                    saveToStorage();
+                    renderRulesTable();
+                    alert("ルールを読み込みました！");
+                } else {
+                    alert("データの形式が正しくありません。");
                 }
-            });
-            if(importedRules.length > 0) maskRules = importedRules;
+            } catch (e) {
+                alert("データの解析に失敗しました。正しいJSONテキストか確認してください。");
+            }
         }
 
-        // CSVのダウンロード機能
+        // Excel用CSVダウンロード
         function downloadCsv() {
             const csvContent = maskRules
                 .filter(r => r.before !== "")
                 .map(r => `${r.before},${r.after}`)
                 .join('\n');
-            
-            const bom = new Uint8Array([0xEF, 0xBB, 0xBF]); // Excel文字化け防止用BOM
+            const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
             const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
